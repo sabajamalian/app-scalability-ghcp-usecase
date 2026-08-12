@@ -1,0 +1,141 @@
+name: SQL performance audit
+
+# This review is intentionally manual. It consumes Copilot requests and starts
+# the repository's seeded PostgreSQL database to collect real query evidence.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Copilot model ID, or auto
+        required: true
+        default: auto
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit-sql:
+    name: Review all SQL with Postgres MCP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_HOME: /tmp/copilot
+      COPILOT_MODEL: ${{ inputs.model }}
+      REPORT_PATH: sql-performance-report.md
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Require Copilot authentication
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
+            echo "::error::Add a COPILOT_GITHUB_TOKEN repository secret. It must be a fine-grained user token with the Copilot Requests permission."
+            exit 1
+          fi
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install GitHub Copilot CLI
+        run: npm install --global @github/copilot
+
+      - name: Start the seeded PostgreSQL database
+        run: docker compose up -d --build --wait db
+
+      - name: Discover SQL scripts
+        run: |
+          git ls-files -z -- '*.sql' | sort -z | tr '\0' '\n' > "$RUNNER_TEMP/sql-files.txt"
+          if [ ! -s "$RUNNER_TEMP/sql-files.txt" ]; then
+            echo "::error::No tracked SQL scripts were found."
+            exit 1
+          fi
+          echo "Discovered $(wc -l < "$RUNNER_TEMP/sql-files.txt" | tr -d ' ') SQL scripts:"
+          cat "$RUNNER_TEMP/sql-files.txt"
+
+      # Copilot CLI does not read .vscode/mcp.json. Convert that checked-in
+      # definition for this run and add Linux host-gateway resolution without
+      # maintaining a second MCP configuration that could drift.
+      - name: Prepare Postgres MCP configuration
+        run: |
+          jq '
+            {mcpServers: (.servers | with_entries(
+              .value.tools = ["*"]
+              | .value.args |= (
+                  if index("--add-host=host.docker.internal:host-gateway") then .
+                  else .[0:1] + ["--add-host=host.docker.internal:host-gateway"] + .[1:]
+                  end
+                )
+            ))}
+          ' .vscode/mcp.json > "$RUNNER_TEMP/mcp-config.json"
+
+      - name: Audit SQL through Postgres MCP
+        run: |
+          sql_files=$(sed 's/^/- /' "$RUNNER_TEMP/sql-files.txt")
+          prompt=$(cat .github/prompts/sql-performance-audit.prompt.md)
+          prompt=${prompt//\{\{SQL_FILES\}\}/$sql_files}
+
+          copilot \
+            --prompt "$prompt" \
+            --model "$COPILOT_MODEL" \
+            --additional-mcp-config="@$RUNNER_TEMP/mcp-config.json" \
+            --allow-tool='read' \
+            --allow-tool='postgres' \
+            --deny-tool='shell' \
+            --deny-tool='write' \
+            --disable-builtin-mcps \
+            --no-ask-user \
+            --no-color \
+            --no-remote \
+            --silent \
+            --stream=off > "$REPORT_PATH"
+
+      - name: Validate report structure
+        run: |
+          required_sections=(
+            "# SQL Performance and Best-Practices Report"
+            "## Run Metadata"
+            "## SQL Inventory"
+            "## Findings"
+            "## Per-File Evidence"
+            "## Statements Not Measured"
+            "## Recommended Next Actions"
+          )
+
+          for section in "${required_sections[@]}"; do
+            if ! grep -Fqx "$section" "$REPORT_PATH"; then
+              echo "::error::Generated report is missing required section: $section"
+              exit 1
+            fi
+          done
+
+          while IFS= read -r sql_file; do
+            if ! grep -Fq "$sql_file" "$REPORT_PATH"; then
+              echo "::error::Generated report does not account for $sql_file"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/sql-files.txt"
+
+      - name: Publish job summary
+        if: success()
+        run: cat "$REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SQL audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sql-performance-report-${{ github.run_number }}
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Show database logs on failure
+        if: failure()
+        run: docker compose logs db | tail -100
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
