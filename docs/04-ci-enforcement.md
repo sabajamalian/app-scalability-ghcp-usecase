@@ -92,6 +92,18 @@ fixed. Pick a budget with headroom, and make the failure message explain the rea
 different query planning would let real regressions through while failing on differences that do
 not matter.
 
+**The job name says it out loud.** The check is called "SQL statement count must stay bounded
+(red until you apply the fix)", and on failure it writes a step summary explaining that the red X
+is the demo working rather than a broken pipeline. Someone who opens a pull request here before
+fixing anything sees a failed check, and without that context a failed check reads as
+misconfiguration. Rename it in your own repo, where a red gate really does mean something is
+wrong.
+
+**The k6 job never fails on thresholds.** k6 exits 99 when a threshold is crossed, and in the
+baseline state both scenarios cross theirs on purpose, so those steps are `continue-on-error`.
+That job's purpose is to produce numbers, not to gate. Infrastructure problems still fail it,
+because the health-check wait is a hard failure.
+
 **The k6 job is manual only.** Load tests are slow and noisy on shared runners; percentile
 thresholds on a shared CI runner produce false failures. Statement counts are deterministic and
 make a much better blocking gate. Run the load test on demand, or nightly against a stable

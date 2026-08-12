@@ -18,13 +18,13 @@ permissions:
 
 jobs:
   query-count-gate:
-    name: SQL statement count must stay bounded
+    name: SQL statement count must stay bounded (red until you apply the fix)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -41,22 +41,53 @@ jobs:
         if: failure()
         run: |
           echo "::error::A request issued more SQL statements than the budget allows."
-          echo ""
-          echo "This is the enforcement half of the demo. Instruction files in"
-          echo ".github/ tell Copilot what good looks like, but instructions are"
-          echo "advisory: a model can ignore them, and a human reviewer can miss"
-          echo "the regression. This job is the part that cannot be talked out of"
-          echo "its opinion."
-          echo ""
-          echo "Reproduce locally:  make up && make measure-1"
-          echo "Walkthrough:        docs/01-scenario-n-plus-one.md"
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## This red X is the demo working
+
+          This repository ships with the N+1 defect still in place, so this gate
+          is **supposed to fail on a clean clone**. Nothing is misconfigured.
+
+          `GET /api/orders` issued 121 SQL statements for 40 orders against a
+          budget of 10. The count scales with row count: the same endpoint issues
+          219 statements against the full seeded dataset.
+
+          ### Why this job exists
+
+          The instruction files in `.github/` tell Copilot what good looks like,
+          but instructions are advisory. A model can ignore them and a reviewer
+          can miss the regression. This job is the part that cannot be talked out
+          of its opinion.
+
+          ### Turn it green
+
+          Apply the fix from the walkthrough, then push again.
+
+          | | |
+          | --- | --- |
+          | Reproduce locally | `make up && make measure-1` |
+          | Run the gate locally | `make test` |
+          | Walkthrough | [`docs/01-scenario-n-plus-one.md`](docs/01-scenario-n-plus-one.md) |
+          | Why CI, not just instructions | [`docs/04-ci-enforcement.md`](docs/04-ci-enforcement.md) |
+          SUMMARY
+
+      - name: Confirm the gate passed
+        if: success()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## Query-count gate passed
+
+          `GET /api/orders` stayed within its statement budget. If you just applied
+          the N+1 fix, this is the check that proves it held, and the check that
+          will catch it the next time someone reintroduces it.
+          SUMMARY
 
   load-test:
     name: k6 smoke (manual only)
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Start the stack
         run: docker compose up -d --build db backend
@@ -73,10 +104,16 @@ jobs:
           docker compose logs backend | tail -50
           exit 1
 
+      # k6 exits 99 when a threshold is crossed, and in the baseline state both
+      # scenarios cross theirs on purpose. This job exists to produce numbers,
+      # not to gate, so a threshold failure must not turn it red. Genuine
+      # infrastructure problems still fail the "Wait for the backend" step above.
       - name: Load test scenario 1
+        continue-on-error: true
         run: docker compose run --rm k6 run /scripts/scenario-1-orders.js
 
       - name: Load test scenario 2
+        continue-on-error: true
         run: docker compose run --rm k6 run /scripts/scenario-2-search.js
 
       - name: Tear down
