@@ -16,6 +16,14 @@ COPY src ./src
 RUN mvn -B -q clean package -DskipTests
 
 FROM eclipse-temurin:25-jre
+
+# curl is here only so the compose healthcheck can hit /actuator/health. The
+# JRE image ships with neither curl nor wget, and a healthcheck that always
+# fails silently marks the service unhealthy while it is serving traffic fine.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=build /build/target/scaledemo-backend-1.0.0.jar app.jar
 EXPOSE 8080

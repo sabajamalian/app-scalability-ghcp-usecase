@@ -65,7 +65,7 @@ services:
     # unnecessary, but a demo that dies on someone's laptop is a bad demo.
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health | grep -q UP"]
       interval: 5s
       timeout: 5s
       retries: 20
