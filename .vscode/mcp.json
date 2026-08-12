@@ -1,0 +1,21 @@
+{
+  "// note": "Postgres MCP Pro pointed at the demo database using the read-only copilot_perf_reader role. The DB role is the real security boundary; --access-mode=restricted is a convenience, not a guarantee. See docs/03-mcp-setup.md.",
+  "servers": {
+    "postgres": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "postgresql://copilot_perf_reader:copilot_demo_readonly@host.docker.internal:5432/scaledemo"
+      }
+    }
+  }
+}

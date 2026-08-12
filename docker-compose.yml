@@ -1,0 +1,97 @@
+# One command starts the whole demo:  make up   (or: docker compose up --build)
+#
+# Services:
+#   db        PostgreSQL 17 + hypopg, seeded on first start
+#   backend   Spring Boot API with the two planted problems
+#   frontend  React UI, one page per scenario
+#   k6        load generator, run on demand via the "loadtest" profile
+
+services:
+  db:
+    build: ./db
+    container_name: scaledemo-db
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: scaledemo
+    # pg_stat_statements has to be preloaded at server start; it cannot be
+    # turned on later from SQL. track=all also records statements executed
+    # inside functions, which keeps the N+1 count honest.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=5000
+    ports:
+      # Exposed so you can psql into it and so the Postgres MCP server can
+      # reach it from your editor. Demo credentials only.
+      - "5432:5432"
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces a TCP check. This matters: during initialization the
+      # postgres entrypoint runs a temporary server that listens on the unix
+      # socket only. A socket-based pg_isready reports healthy while seeding is
+      # still running, the backend starts against it, and gets connection
+      # refused when the real server restarts. Checking TCP avoids that race.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U demo -d scaledemo"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      # Seeding 400k orders takes roughly 20 to 40 seconds on first start. The
+      # start period stops Compose from declaring the database unhealthy while
+      # that is still running.
+      start_period: 120s
+
+  backend:
+    build: ./backend
+    container_name: scaledemo-backend
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: scaledemo
+      DB_USER: demo
+      DB_PASSWORD: demo
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Safety net for slow machines. The healthcheck above should make this
+    # unnecessary, but a demo that dies on someone's laptop is a bad demo.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  frontend:
+    build: ./frontend
+    container_name: scaledemo-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_started
+
+  k6:
+    image: grafana/k6:latest
+    container_name: scaledemo-k6
+    # Only runs when explicitly invoked, so `docker compose up` does not start
+    # generating load against a backend that is still warming up.
+    profiles: ["loadtest"]
+    environment:
+      BASE_URL: http://backend:8080
+    volumes:
+      - ./loadtest:/scripts:ro
+    working_dir: /scripts
+    entrypoint: ["k6"]
+
+volumes:
+  pgdata:
