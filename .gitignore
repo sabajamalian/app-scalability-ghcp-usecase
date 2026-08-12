@@ -1,0 +1,25 @@
+# Java / Maven
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# Node
+node_modules/
+dist/
+.vite/
+*.local
+
+# Editors
+.idea/
+*.iml
+.DS_Store
+
+# Load test output
+loadtest/results/
+*.k6-summary.json
+
+# Local env overrides
+.env
+docker-compose.override.yml
