@@ -72,6 +72,9 @@ jobs:
             ))}
           ' .vscode/mcp.json > "$RUNNER_TEMP/mcp-config.json"
 
+      # The CLI's text output is rendered for a terminal, which strips Markdown
+      # headings and redraws tables as box characters. JSONL output carries the
+      # agent's raw Markdown, so the report is extracted from the final message.
       - name: Audit SQL through Postgres MCP
         run: |
           sql_files=$(sed 's/^/- /' "$RUNNER_TEMP/sql-files.txt")
@@ -90,8 +93,20 @@ jobs:
             --no-ask-user \
             --no-color \
             --no-remote \
-            --silent \
-            --stream=off > "$REPORT_PATH"
+            --output-format json \
+            --stream=off > "$RUNNER_TEMP/agent-output.jsonl"
+
+          jq -rs '
+            map(select(.type == "assistant.message" and .data.phase == "final_answer"))
+            | last
+            | .data.content // empty
+          ' "$RUNNER_TEMP/agent-output.jsonl" > "$REPORT_PATH"
+
+          if [ ! -s "$REPORT_PATH" ]; then
+            echo "::error::The agent produced no final report. Last output lines:"
+            tail -20 "$RUNNER_TEMP/agent-output.jsonl"
+            exit 1
+          fi
 
       - name: Validate report structure
         run: |
